@@ -420,13 +420,13 @@ def test_hosted_api_endpoint_openai_and_direct_fail_falls_back_to_nvext(
     assert result.rating == 5
 
 
-# --- Self-hosted NIM tests (direct -> nvext -> OpenAI) ---
+# --- Self-hosted NIM tests (OpenAI -> direct -> nvext) ---
 
 
-def test_self_hosted_direct_format_succeeds(
+def test_self_hosted_openai_format_succeeds(
     requests_mock: requests_mock.Mocker,
 ) -> None:
-    """Test self-hosted: direct format succeeds on first try."""
+    """Test self-hosted: OpenAI format succeeds on first try."""
     requests_mock.get(
         "http://my-nim:8000/v1/models",
         json={"data": [{"id": "my-model"}]},
@@ -442,13 +442,15 @@ def test_self_hosted_direct_format_succeeds(
     ).with_structured_output(Joke)
     result = llm.invoke("test")
 
-    # Should only make 1 POST call (direct format succeeds)
+    # Should only make 1 POST call (OpenAI format succeeds)
     post_calls = [req for req in requests_mock.request_history if req.method == "POST"]
     assert len(post_calls) == 1
 
-    # First call: direct format (succeeds)
+    # First call: OpenAI format (succeeds)
     body = post_calls[0].json()
-    assert "guided_json" in body
+    assert "response_format" in body
+    assert body["response_format"]["type"] == "json_schema"
+    assert "guided_json" not in body
     assert "nvext" not in body
 
     assert isinstance(result, Joke)
@@ -457,19 +459,18 @@ def test_self_hosted_direct_format_succeeds(
     assert result.rating == 5
 
 
-def test_self_hosted_direct_fails_falls_back_to_nvext(
+def test_self_hosted_openai_fails_falls_back_to_direct(
     requests_mock: requests_mock.Mocker,
 ) -> None:
-    """Test self-hosted: direct format fails, falls back to nvext format."""
+    """Test self-hosted: OpenAI format fails, falls back to direct format."""
     requests_mock.get(
         "http://my-nim:8000/v1/models",
         json={"data": [{"id": "my-model"}]},
     )
-    # First call fails (direct), second succeeds (nvext)
     requests_mock.post(
         "http://my-nim:8000/v1/chat/completions",
         [
-            {"status_code": 400, "json": {"error": "direct failed"}},
+            {"status_code": 400, "json": {"error": "openai format failed"}},
             {"json": _success_response(_JOKE_JSON)},
         ],
     )
@@ -480,16 +481,15 @@ def test_self_hosted_direct_fails_falls_back_to_nvext(
     ).with_structured_output(Joke)
     result = llm.invoke("test")
 
-    # Should make 2 POST calls: direct format (fails) + nvext format (succeeds)
     post_calls = [req for req in requests_mock.request_history if req.method == "POST"]
     assert len(post_calls) == 2, f"Expected 2 POST calls, got {len(post_calls)}"
 
-    # First call: direct format (fails)
-    assert "guided_json" in post_calls[0].json()
+    # First call: OpenAI format (fails)
+    assert "response_format" in post_calls[0].json()
+    # Second call: direct format (succeeds)
+    assert "guided_json" in post_calls[1].json()
     assert "nvext" not in post_calls[0].json()
-    # Second call: nvext format (succeeds)
-    assert "nvext" in post_calls[1].json()
-    assert "guided_json" in post_calls[1].json()["nvext"]
+    assert "nvext" not in post_calls[1].json()
 
     assert isinstance(result, Joke)
     assert result.setup == "Why did the chicken cross the road?"
@@ -497,20 +497,19 @@ def test_self_hosted_direct_fails_falls_back_to_nvext(
     assert result.rating == 5
 
 
-def test_self_hosted_fallback_to_openai_format(
+def test_self_hosted_openai_and_direct_fail_falls_back_to_nvext(
     requests_mock: requests_mock.Mocker,
 ) -> None:
-    """Test self-hosted: direct and nvext fail, falls back to OpenAI."""
+    """Test self-hosted: OpenAI and direct format fail, falls back to nvext."""
     requests_mock.get(
         "http://my-nim:8000/v1/models",
         json={"data": [{"id": "my-model"}]},
     )
-    # First two calls fail (direct, nvext), third succeeds (OpenAI)
     requests_mock.post(
         "http://my-nim:8000/v1/chat/completions",
         [
+            {"status_code": 400, "json": {"error": "openai format failed"}},
             {"status_code": 400, "json": {"error": "direct failed"}},
-            {"status_code": 400, "json": {"error": "nvext failed"}},
             {"json": _success_response(_JOKE_JSON)},
         ],
     )
@@ -524,15 +523,51 @@ def test_self_hosted_fallback_to_openai_format(
     post_calls = [req for req in requests_mock.request_history if req.method == "POST"]
     assert len(post_calls) == 3, f"Expected 3 POST calls, got {len(post_calls)}"
 
-    # First call: direct format (fails)
-    assert "guided_json" in post_calls[0].json()
-    assert "nvext" not in post_calls[0].json()
-    # Second call: nvext format (fails)
-    assert "nvext" in post_calls[1].json()
-    # Third call: OpenAI format (succeeds)
-    body = post_calls[2].json()
-    assert "response_format" in body
-    assert body["response_format"]["type"] == "json_schema"
+    # First call: OpenAI format (fails)
+    assert "response_format" in post_calls[0].json()
+    # Second call: direct format (fails)
+    assert "guided_json" in post_calls[1].json()
+    assert "nvext" not in post_calls[1].json()
+    # Third call: nvext format (succeeds)
+    assert "nvext" in post_calls[2].json()
+    assert "guided_json" in post_calls[2].json()["nvext"]
+
+    assert isinstance(result, Joke)
+    assert result.setup == "Why did the chicken cross the road?"
+    assert result.punchline == "To get to the other side"
+    assert result.rating == 5
+
+
+def test_self_hosted_unparseable_openai_response_falls_back_to_direct(
+    requests_mock: requests_mock.Mocker,
+) -> None:
+    """Test self-hosted: ignored response_format with HTTP 200 still falls back."""
+    requests_mock.get(
+        "http://my-nim:8000/v1/models",
+        json={"data": [{"id": "my-model"}]},
+    )
+    requests_mock.post(
+        "http://my-nim:8000/v1/chat/completions",
+        [
+            {"json": _success_response("not valid json")},
+            {"json": _success_response(_JOKE_JSON)},
+        ],
+    )
+
+    warnings.filterwarnings("ignore", r".*not known to support structured output.*")
+    llm = ChatNVIDIA(
+        base_url="http://my-nim:8000/v1", api_key="BOGUS"
+    ).with_structured_output(Joke)
+    result = llm.invoke("test")
+
+    post_calls = [req for req in requests_mock.request_history if req.method == "POST"]
+    assert len(post_calls) == 2, f"Expected 2 POST calls, got {len(post_calls)}"
+
+    # First call: OpenAI format returns unparseable content (parser returns None)
+    assert "response_format" in post_calls[0].json()
+    # Second call: direct format succeeds
+    assert "guided_json" in post_calls[1].json()
+    assert "nvext" not in post_calls[1].json()
 
     assert isinstance(result, Joke)
     assert result.setup == "Why did the chicken cross the road?"
@@ -573,33 +608,33 @@ def test_enum_openai_format_invoke(
     assert rf["json_schema"]["schema"]["additionalProperties"] is False
 
 
-def test_self_hosted_enum_guided_choice_succeeds(
+def test_self_hosted_enum_openai_format_succeeds(
     requests_mock: requests_mock.Mocker,
 ) -> None:
-    """Test self-hosted: enum uses guided_choice first and succeeds."""
+    """Test self-hosted: enum uses OpenAI response_format first."""
     requests_mock.get(
         "http://my-nim:8000/v1/models",
         json={"data": [{"id": "my-model"}]},
     )
     requests_mock.post(
         "http://my-nim:8000/v1/chat/completions",
-        json=_success_response("Yes it is"),
+        json=_success_response('{"choice": "Yes it is"}'),
     )
 
     warnings.filterwarnings("ignore", r".*not known to support structured output.*")
     llm = ChatNVIDIA(
         base_url="http://my-nim:8000/v1", api_key="BOGUS"
     ).with_structured_output(Choices)
-    result = llm.invoke("test")
+    with pytest.warns(UserWarning, match="Enum structured output is not guaranteed"):
+        result = llm.invoke("test")
 
-    # Should only make 1 POST call (guided_choice succeeds)
     post_calls = [req for req in requests_mock.request_history if req.method == "POST"]
     assert len(post_calls) == 1
 
-    # Verify guided_choice was used (not OpenAI format)
+    # Verify OpenAI format was used before legacy guided_choice.
     body = post_calls[0].json()
-    assert "guided_choice" in body
-    assert "response_format" not in body
+    assert "response_format" in body
+    assert "guided_choice" not in body
 
     assert isinstance(result, Choices)
     assert result == Choices.YES

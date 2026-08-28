@@ -50,6 +50,52 @@ def assert_response_error(
     assert validate_content(content_str)
 
 
+def _is_known_message_shape_error(messages: List[BaseMessage], exc: Exception) -> bool:
+    """Return True when a model rejects a known-optional message pattern."""
+    roles = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            roles.append("user")
+        elif isinstance(message, AIMessage):
+            roles.append("assistant")
+        elif isinstance(message, SystemMessage):
+            roles.append("system")
+
+    text = str(exc).lower()
+    if "system" in roles and (
+        "system" in text
+        or "role" in text
+        or "input should be 'user' or 'assistant'" in text
+    ):
+        return True
+
+    chat_roles = [role for role in roles if role != "system"]
+    if not chat_roles:
+        return False
+
+    has_repeated_chat_role = any(
+        left == right for left, right in zip(chat_roles, chat_roles[1:])
+    )
+    has_optional_chat_shape = (
+        has_repeated_chat_role
+        or chat_roles[0] == "assistant"
+        or chat_roles[-1] == "assistant"
+    )
+    if not has_optional_chat_shape:
+        return False
+
+    return any(
+        marker in text
+        for marker in (
+            "roles must alternate",
+            "add_generation_prompt",
+            "continue_final_message",
+            "chat template",
+            "last message is from the assistant",
+        )
+    )
+
+
 @pytest.mark.parametrize(
     "func",
     ["invoke", "ainvoke"],
@@ -115,14 +161,10 @@ async def test_chat_ai_endpoints_system_message(
         pytest.param(
             [HumanMessage(content="Hello"), HumanMessage(content="Hello")],
             id="double_human_message",
-            marks=pytest.mark.xfail(
-                reason="Known issue, messages types must alternate"
-            ),
         ),
         pytest.param(
             [AIMessage(content="Hi"), AIMessage(content="Hi")],
             id="double_ai_message",
-            marks=pytest.mark.xfail(reason="Known issue, message types must alternate"),
         ),
         pytest.param(
             [HumanMessage(content="Hello"), AIMessage(content="Hi")],
@@ -171,19 +213,19 @@ async def test_chat_ai_endpoints_system_message(
         ),
     ],
 )
-@pytest.mark.xfail(
-    reason=(
-        "not all endpoints support system messages, "
-        "repeated message types or ending with an ai message"
-    )
-)
 def test_messages(
     chat_model: str, mode: dict, system: List, exchange: List[BaseMessage]
 ) -> None:
     if not system and not exchange:
         pytest.skip("No messages to test")
     chat = ChatNVIDIA(model=chat_model, max_tokens=36, **mode)
-    response = chat.invoke(system + exchange)
+    messages = system + exchange
+    try:
+        response = chat.invoke(messages)
+    except Exception as exc:
+        if _is_known_message_shape_error(messages, exc):
+            pytest.xfail(f"Endpoint does not support this message shape: {exc}")
+        raise
     assert isinstance(response, BaseMessage)
     assert response.response_metadata["role"] == "assistant"
     assert isinstance(response.content, str)

@@ -1431,16 +1431,11 @@ class ChatNVIDIA(BaseChatModel):
         openai_parser = openai_output_parser or output_parser
         openai_compat_chain = openai_compat_llm | openai_parser
 
-        # For hosted NVIDIA API endpoint: try OpenAI format first,
-        #   then fall back to direct -> nvext
-        # For self-hosted NIMs: try direct -> nvext first,
-        #   then fall back to OpenAI format
-        # The fallback is mostly defensive. The primary format for each
-        # case is expected to succeed.
-        if self._client.is_hosted:
-            chains = [openai_compat_chain] + guided_chains
-        else:
-            chains = guided_chains + [openai_compat_chain]
+        # Try the OpenAI-compatible response_format first for both hosted
+        # endpoints and self-hosted NIMs. Recent NIMs support response_format,
+        # while legacy guided_json/nvext fields may be ignored by vLLM and
+        # return free-form text with HTTP 200.
+        chains = [openai_compat_chain] + guided_chains
 
         from langchain_core.runnables import Runnable, RunnableConfig
 
