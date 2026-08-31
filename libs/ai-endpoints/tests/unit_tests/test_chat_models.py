@@ -350,6 +350,7 @@ def test_different_thinking_prefixes_for_different_models(
     "model_name",
     [
         "nvidia/nemotron-3-nano-30b-a3b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
     ],
 )
 @pytest.mark.parametrize(
@@ -397,6 +398,7 @@ def test_param_based_thinking_mode(
     "model_name",
     [
         "nvidia/nemotron-3-nano-30b-a3b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
     ],
 )
 @pytest.mark.parametrize(
