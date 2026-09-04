@@ -530,9 +530,9 @@ class _NVIDIABaseClient(BaseModel):
                     f"Timeout reached without a successful response."
                     f"\nLast response: {str(response)}"
                 )
-            assert "NVCF-REQID" in response.headers, (
-                "Received 202 response with no request id to follow"
-            )
+            assert (
+                "NVCF-REQID" in response.headers
+            ), "Received 202 response with no request id to follow"
             request_id = response.headers.get("NVCF-REQID")
             payload = {
                 "url": self.polling_url_tmpl.format(request_id=request_id),
@@ -873,9 +873,9 @@ class _NVIDIAAsyncClient(_NVIDIABaseClient):
                     f"Timeout reached without a successful response."
                     f"\nLast response: {str(response)}"
                 )
-            assert "NVCF-REQID" in response.headers, (
-                "Received 202 response with no request id to follow"
-            )
+            assert (
+                "NVCF-REQID" in response.headers
+            ), "Received 202 response with no request id to follow"
             request_id = response.headers.get("NVCF-REQID")
             payload = {
                 "url": self.polling_url_tmpl.format(request_id=request_id),
