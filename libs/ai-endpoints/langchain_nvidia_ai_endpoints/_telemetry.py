@@ -8,7 +8,7 @@ import importlib.metadata
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Optional
 from uuid import uuid4
@@ -21,10 +21,11 @@ from langchain_nvidia_ai_endpoints._version import __version__
 
 _CLIENT_ID = "623344073512268"
 _EVENT_SCHEMA_VERSION = "1.0"
-_REGISTRY_SCHEMA_VERSION = "0.1"
+_REGISTRY_SCHEMA_VERSION = "0.2"
 _EVENT_PROTOCOL = "1.6"
 _EVENT_NAME = "nim_client_usage"
 _CONNECTOR = "langchain-nvidia-ai-endpoints"
+_TELEMETRY_CLIENT_VERSION = "1.0"
 _DEFAULT_ENDPOINT = "https://events.telemetry.data.nvidia.com/v1.1/events/json"
 _UAT_ENDPOINT = "https://events.telemetry.data-uat.nvidia.com/v1.1/events/json"
 _ALLOWED_ENDPOINTS = frozenset({_DEFAULT_ENDPOINT, _UAT_ENDPOINT})
@@ -40,6 +41,29 @@ _OPERATION_BY_CLIENT = {
     "NVIDIARerank": "rerank",
     "NVIDIA": "completion",
 }
+_ERROR_CATEGORIES = (
+    "authentication",
+    "authorization",
+    "rate_limited",
+    "timeout",
+    "network",
+    "provider_4xx",
+    "provider_5xx",
+    "client_validation",
+    "cancelled",
+    "unknown",
+)
+_HTTP_STATUS_CLASSES = ("2xx", "4xx", "5xx", "none", "unknown")
+_LATENCY_BUCKETS = (
+    ("le_100_ms", 0.1),
+    ("le_250_ms", 0.25),
+    ("le_500_ms", 0.5),
+    ("le_1000_ms", 1.0),
+    ("le_2500_ms", 2.5),
+    ("le_5000_ms", 5.0),
+    ("le_10000_ms", 10.0),
+)
+_OVERFLOW_BUCKET = "gt_10000_ms"
 
 _APPROVED_MODEL_LOOKUP: dict[str, str] = {}
 for _approved_model in MODEL_TABLE.values():
@@ -52,6 +76,7 @@ for _approved_model in MODEL_TABLE.values():
 class _UsageKey:
     window_start: str
     connector_version: str
+    execution_mode: str
     framework_version: str
     operation: str
     model_family: str
@@ -63,11 +88,30 @@ class _UsageKey:
 class _UsageAggregate:
     success_count: int = 0
     failure_count: int = 0
+    cancelled_count: int = 0
+    partial_count: int = 0
     request_count: int = 0
     attempt_count: int = 0
+    retried_request_count: int = 0
+    first_attempt_success_count: int = 0
     input_token_sum: int = 0
     output_token_sum: int = 0
     missing_token_count: int = 0
+    missing_token_attempt_count: int = 0
+    error_category_counts: dict[str, int] = field(
+        default_factory=lambda: _zero_counts(_ERROR_CATEGORIES)
+    )
+    http_status_class_counts: dict[str, int] = field(
+        default_factory=lambda: _zero_counts(_HTTP_STATUS_CLASSES)
+    )
+    latency_bucket_counts: dict[str, int] = field(
+        default_factory=lambda: _zero_latency_buckets()
+    )
+    ttft_bucket_counts: dict[str, int] = field(
+        default_factory=lambda: _zero_latency_buckets()
+    )
+    missing_ttft_count: int = 0
+    client_drop_count: int = 0
 
     def record(
         self,
@@ -76,13 +120,28 @@ class _UsageAggregate:
         input_tokens: int,
         output_tokens: int,
         tokens_missing: bool,
+        error_category: str,
+        http_status_class: str,
+        execution_mode: str,
+        latency_seconds: float,
+        ttft_seconds: Optional[float],
+        partial: bool,
     ) -> None:
         self.request_count = min(_MAX_COUNT, self.request_count + 1)
         self.attempt_count = min(_MAX_COUNT, self.attempt_count + 1)
         if success:
             self.success_count = min(_MAX_COUNT, self.success_count + 1)
+            self.first_attempt_success_count = min(
+                _MAX_COUNT, self.first_attempt_success_count + 1
+            )
         else:
             self.failure_count = min(_MAX_COUNT, self.failure_count + 1)
+            if error_category == "cancelled":
+                self.cancelled_count = min(_MAX_COUNT, self.cancelled_count + 1)
+            if partial:
+                self.partial_count = min(_MAX_COUNT, self.partial_count + 1)
+            if error_category in self.error_category_counts:
+                _increment_count(self.error_category_counts, error_category)
         self.input_token_sum = min(
             _MAX_TOKEN_SUM, self.input_token_sum + max(0, input_tokens)
         )
@@ -91,6 +150,16 @@ class _UsageAggregate:
         )
         if tokens_missing:
             self.missing_token_count = min(_MAX_COUNT, self.missing_token_count + 1)
+            self.missing_token_attempt_count = min(
+                _MAX_COUNT, self.missing_token_attempt_count + 1
+            )
+        _increment_count(self.http_status_class_counts, http_status_class)
+        _increment_bucket(self.latency_bucket_counts, latency_seconds)
+        if execution_mode == "streaming":
+            if ttft_seconds is None:
+                self.missing_ttft_count = min(_MAX_COUNT, self.missing_ttft_count + 1)
+            else:
+                _increment_bucket(self.ttft_bucket_counts, ttft_seconds)
 
 
 @dataclass(frozen=True)
@@ -98,6 +167,12 @@ class _TokenUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     found: bool = False
+
+
+@dataclass(frozen=True)
+class _TransportDelivery:
+    retry_count: int = 0
+    terminal_failure: bool = False
 
 
 def usage_telemetry_enabled(value: Optional[bool] = None) -> bool:
@@ -240,12 +315,29 @@ def classify_error(response: Any, error: BaseException) -> str:
     return "unknown"
 
 
+def http_status_class(response: Any) -> str:
+    """Map a response status to the approved coarse status-class bucket."""
+
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(response, "status", None)
+    if not isinstance(status, int):
+        return "none"
+    if 200 <= status < 300:
+        return "2xx"
+    if 400 <= status < 500:
+        return "4xx"
+    if status >= 500:
+        return "5xx"
+    return "unknown"
+
+
 class _UsageTelemetry:
     def __init__(
         self,
         *,
         endpoint: str,
-        post: Callable[[str, dict[str, Any]], None],
+        post: Callable[[str, dict[str, Any]], Any],
         now: Callable[[], datetime],
         start_worker: bool = True,
         max_buckets: int = _MAX_BUCKETS,
@@ -261,6 +353,9 @@ class _UsageTelemetry:
         self._thread: Optional[threading.Thread] = None
         self._wake = threading.Event()
         self._closed = False
+        self._pending_client_drop_count = 0
+        self._pending_transport_retry_count = 0
+        self._pending_terminal_send_failure_count = 0
 
     def record(
         self,
@@ -270,13 +365,20 @@ class _UsageTelemetry:
         success: bool,
         usage: _TokenUsage,
         error_category: str = "none",
+        execution_mode: str = "sync",
+        http_status: str = "none",
+        latency_seconds: float = 0.0,
+        ttft_seconds: Optional[float] = None,
+        partial: bool = False,
     ) -> None:
         now = self._now().astimezone(timezone.utc)
         canonical_id, family = canonical_model_identity(model_name)
-        category = "none" if success else error_category
+        category = "none" if success else _error_category(error_category)
+        status_class = _http_status_class(http_status)
         key = _UsageKey(
             window_start=_hour_start(now),
             connector_version=_version_bucket(__version__),
+            execution_mode=_execution_mode(execution_mode),
             framework_version=_framework_version_bucket(),
             operation=operation_for_client(client_name),
             model_family=family,
@@ -289,13 +391,28 @@ class _UsageTelemetry:
             aggregate = self._aggregates.get(key)
             if aggregate is None:
                 if len(self._aggregates) >= self._max_buckets:
+                    self._pending_client_drop_count = min(
+                        _MAX_COUNT, self._pending_client_drop_count + 1
+                    )
                     return
                 aggregate = self._aggregates[key] = _UsageAggregate()
+            if self._pending_client_drop_count:
+                aggregate.client_drop_count = min(
+                    _MAX_COUNT,
+                    aggregate.client_drop_count + self._pending_client_drop_count,
+                )
+                self._pending_client_drop_count = 0
             aggregate.record(
                 success=success,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 tokens_missing=not usage.found,
+                error_category=category,
+                http_status_class=status_class,
+                execution_mode=key.execution_mode,
+                latency_seconds=latency_seconds,
+                ttft_seconds=ttft_seconds,
+                partial=partial,
             )
             if self._start_worker and self._thread is None:
                 self._thread = threading.Thread(
@@ -321,11 +438,45 @@ class _UsageTelemetry:
         if not ready:
             return 0
         batch_id = str(uuid4())
-        events = [
-            _event_payload(key, aggregate, batch_id=batch_id)
-            for key, aggregate in ready
-        ]
-        self._post(self._endpoint, _transport_envelope(events, now=now))
+        pending_retry_count = self._pending_transport_retry_count
+        pending_failure_count = self._pending_terminal_send_failure_count
+        events = []
+        for index, (key, aggregate) in enumerate(ready):
+            events.append(
+                _event_payload(
+                    key,
+                    aggregate,
+                    batch_id=batch_id,
+                    transport_retry_count=pending_retry_count if index == 0 else 0,
+                    prior_terminal_send_failure_count=(
+                        pending_failure_count if index == 0 else 0
+                    ),
+                )
+            )
+        try:
+            delivery = self._post(self._endpoint, _transport_envelope(events, now=now))
+        except Exception:
+            delivery = _TransportDelivery(terminal_failure=True)
+        if isinstance(delivery, _TransportDelivery):
+            with self._lock:
+                if delivery.terminal_failure:
+                    self._pending_transport_retry_count = min(
+                        _MAX_COUNT,
+                        self._pending_transport_retry_count + delivery.retry_count,
+                    )
+                    self._pending_terminal_send_failure_count = min(
+                        _MAX_COUNT,
+                        self._pending_terminal_send_failure_count + 1,
+                    )
+                else:
+                    self._pending_transport_retry_count = min(
+                        _MAX_COUNT, delivery.retry_count
+                    )
+                    self._pending_terminal_send_failure_count = 0
+        else:
+            with self._lock:
+                self._pending_transport_retry_count = 0
+                self._pending_terminal_send_failure_count = 0
         return len(events)
 
     def close(self) -> None:
@@ -361,6 +512,11 @@ def record_usage(
     success: bool,
     usage: _TokenUsage,
     error_category: str = "none",
+    execution_mode: str = "sync",
+    http_status: str = "none",
+    latency_seconds: float = 0.0,
+    ttft_seconds: Optional[float] = None,
+    partial: bool = False,
 ) -> None:
     """Record one logical request without retaining request or response content."""
 
@@ -375,6 +531,11 @@ def record_usage(
         success=success,
         usage=usage,
         error_category=error_category,
+        execution_mode=execution_mode,
+        http_status=http_status,
+        latency_seconds=latency_seconds,
+        ttft_seconds=ttft_seconds,
+        partial=partial,
     )
 
 
@@ -417,8 +578,9 @@ def _reset_usage_telemetry_for_tests() -> None:
         state.close()
 
 
-def _post_envelope(endpoint: str, payload: dict[str, Any]) -> None:
+def _post_envelope(endpoint: str, payload: dict[str, Any]) -> _TransportDelivery:
     timeout = _bounded_float(os.getenv("NVIDIA_USAGE_TELEMETRY_TIMEOUT_SECONDS"), 2.0)
+    retry_count = 0
     for attempt in range(3):
         try:
             response = requests.post(
@@ -433,18 +595,26 @@ def _post_envelope(endpoint: str, payload: dict[str, Any]) -> None:
             )
         except requests.exceptions.RequestException:
             if attempt < 2:
+                retry_count += 1
                 time.sleep(0.1 * (2**attempt))
             continue
         if response.ok:
-            return
+            return _TransportDelivery(retry_count=retry_count)
         if response.status_code not in {408, 429} and response.status_code < 500:
-            return
+            return _TransportDelivery(retry_count=retry_count, terminal_failure=True)
         if attempt < 2:
+            retry_count += 1
             time.sleep(0.1 * (2**attempt))
+    return _TransportDelivery(retry_count=retry_count, terminal_failure=True)
 
 
 def _event_payload(
-    key: _UsageKey, aggregate: _UsageAggregate, *, batch_id: str
+    key: _UsageKey,
+    aggregate: _UsageAggregate,
+    *,
+    batch_id: str,
+    transport_retry_count: int = 0,
+    prior_terminal_send_failure_count: int = 0,
 ) -> dict[str, Any]:
     return {
         "ts": _iso_timestamp(datetime.now(timezone.utc)),
@@ -452,21 +622,36 @@ def _event_payload(
         "parameters": {
             "eventSchemaVersion": _EVENT_SCHEMA_VERSION,
             "windowStart": key.window_start,
+            "telemetryClientVersion": _TELEMETRY_CLIENT_VERSION,
             "connector": _CONNECTOR,
             "connectorVersion": key.connector_version,
             "framework": "langchain",
             "frameworkVersion": key.framework_version,
             "operation": key.operation,
+            "executionMode": key.execution_mode,
             "modelFamily": key.model_family,
             "nimId": key.nim_id,
             "successCount": aggregate.success_count,
             "failureCount": aggregate.failure_count,
+            "cancelledCount": aggregate.cancelled_count,
+            "partialCount": aggregate.partial_count,
             "requestCount": aggregate.request_count,
             "attemptCount": aggregate.attempt_count,
+            "retriedRequestCount": aggregate.retried_request_count,
+            "firstAttemptSuccessCount": aggregate.first_attempt_success_count,
             "inputTokenSum": aggregate.input_token_sum,
             "outputTokenSum": aggregate.output_token_sum,
             "missingTokenCount": aggregate.missing_token_count,
+            "missingTokenAttemptCount": aggregate.missing_token_attempt_count,
             "errorCategory": key.error_category,
+            "errorCategoryCounts": dict(aggregate.error_category_counts),
+            "httpStatusClassCounts": dict(aggregate.http_status_class_counts),
+            "latencyBucketCounts": dict(aggregate.latency_bucket_counts),
+            "ttftBucketCounts": dict(aggregate.ttft_bucket_counts),
+            "missingTtftCount": aggregate.missing_ttft_count,
+            "clientDropCount": aggregate.client_drop_count,
+            "transportRetryCount": transport_retry_count,
+            "priorTerminalSendFailureCount": prior_terminal_send_failure_count,
             "batchId": batch_id,
         },
     }
@@ -523,6 +708,22 @@ def _version_bucket(value: str) -> str:
     return f"{int(parts[0])}.{int(parts[1])}"
 
 
+def _execution_mode(value: str) -> str:
+    return (
+        value
+        if value in {"sync", "async", "streaming", "batch", "other"}
+        else "unknown"
+    )
+
+
+def _error_category(value: str) -> str:
+    return value if value in _ERROR_CATEGORIES else "unknown"
+
+
+def _http_status_class(value: str) -> str:
+    return value if value in _HTTP_STATUS_CLASSES else "unknown"
+
+
 def _hour_start(value: datetime) -> str:
     value = value.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
     return value.strftime("%Y-%m-%dT%H:00:00Z")
@@ -544,6 +745,28 @@ def _nonnegative_int(value: Any) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _zero_counts(keys: tuple[str, ...]) -> dict[str, int]:
+    return {key: 0 for key in keys}
+
+
+def _zero_latency_buckets() -> dict[str, int]:
+    return {key: 0 for key, _ in _LATENCY_BUCKETS} | {_OVERFLOW_BUCKET: 0}
+
+
+def _increment_count(values: dict[str, int], key: str) -> None:
+    values[key] = min(_MAX_COUNT, values.get(key, 0) + 1)
+
+
+def _increment_bucket(values: dict[str, int], duration_seconds: float) -> None:
+    bucket = _OVERFLOW_BUCKET
+    duration_seconds = max(0.0, duration_seconds)
+    for candidate, upper_bound in _LATENCY_BUCKETS:
+        if duration_seconds <= upper_bound:
+            bucket = candidate
+            break
+    _increment_count(values, bucket)
 
 
 def _bounded_float(value: Optional[str], default: float) -> float:

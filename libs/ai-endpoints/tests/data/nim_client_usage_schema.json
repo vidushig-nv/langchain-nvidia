@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "schemaMeta": {
-    "schemaVersion": "0.1",
+    "schemaVersion": "0.2",
     "clientId": "623344073512268",
     "clientName": "NIM_OSS",
     "definitionVersion": "1.0",
@@ -101,6 +101,137 @@
         "description": "Bounded nonnegative aggregate token sum; collection remains subject to privacy approval.",
         "minimum": 0,
         "maximum": 9223372036854775807
+      },
+      "NimExecutionModeEnum": {
+        "type": "string",
+        "description": "Closed execution mode for the logical connector invocation.",
+        "enum": [
+          "sync",
+          "async",
+          "streaming",
+          "batch",
+          "other",
+          "unknown"
+        ]
+      },
+      "NimErrorCategoryCounts": {
+        "type": "object",
+        "description": "Closed error category counts for this aggregate window.",
+        "additionalProperties": false,
+        "properties": {
+          "authentication": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "authorization": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "rate_limited": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "timeout": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "network": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "provider_4xx": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "provider_5xx": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "client_validation": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "cancelled": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "unknown": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          }
+        },
+        "required": [
+          "authentication",
+          "authorization",
+          "rate_limited",
+          "timeout",
+          "network",
+          "provider_4xx",
+          "provider_5xx",
+          "client_validation",
+          "cancelled",
+          "unknown"
+        ]
+      },
+      "NimHttpStatusClassCounts": {
+        "type": "object",
+        "description": "Closed HTTP response status-class counts; no status code, response body, or exception text.",
+        "additionalProperties": false,
+        "properties": {
+          "2xx": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "4xx": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "5xx": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "none": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "unknown": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          }
+        },
+        "required": [
+          "2xx",
+          "4xx",
+          "5xx",
+          "none",
+          "unknown"
+        ]
+      },
+      "NimLatencyBucketCounts": {
+        "type": "object",
+        "description": "Versioned aggregate latency histogram counts; no raw duration values.",
+        "additionalProperties": false,
+        "properties": {
+          "le_100_ms": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "le_250_ms": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "le_500_ms": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "le_1000_ms": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "le_2500_ms": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "le_5000_ms": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "le_10000_ms": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "gt_10000_ms": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          }
+        },
+        "required": [
+          "le_100_ms",
+          "le_250_ms",
+          "le_500_ms",
+          "le_1000_ms",
+          "le_2500_ms",
+          "le_5000_ms",
+          "le_10000_ms",
+          "gt_10000_ms"
+        ]
       }
     },
     "events": {
@@ -124,6 +255,9 @@
           "windowStart": {
             "$ref": "#/definitions/types/NimUtcHour"
           },
+          "telemetryClientVersion": {
+            "$ref": "#/definitions/types/NimVersionBucket"
+          },
           "connector": {
             "type": "string",
             "description": "The only connector in the approval-gated MVP.",
@@ -141,6 +275,9 @@
           "operation": {
             "$ref": "#/definitions/types/NimOperationEnum"
           },
+          "executionMode": {
+            "$ref": "#/definitions/types/NimExecutionModeEnum"
+          },
           "modelFamily": {
             "$ref": "#/definitions/types/NimModelFamilyEnum"
           },
@@ -156,11 +293,23 @@
           "failureCount": {
             "$ref": "#/definitions/types/NimAggregateCount"
           },
+          "cancelledCount": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "partialCount": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
           "requestCount": {
             "$ref": "#/definitions/types/NimPositiveAggregateCount"
           },
           "attemptCount": {
             "$ref": "#/definitions/types/NimPositiveAggregateCount"
+          },
+          "retriedRequestCount": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "firstAttemptSuccessCount": {
+            "$ref": "#/definitions/types/NimAggregateCount"
           },
           "inputTokenSum": {
             "$ref": "#/definitions/types/NimTokenSum"
@@ -171,8 +320,35 @@
           "missingTokenCount": {
             "$ref": "#/definitions/types/NimAggregateCount"
           },
+          "missingTokenAttemptCount": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
           "errorCategory": {
             "$ref": "#/definitions/types/NimErrorCategoryEnum"
+          },
+          "errorCategoryCounts": {
+            "$ref": "#/definitions/types/NimErrorCategoryCounts"
+          },
+          "httpStatusClassCounts": {
+            "$ref": "#/definitions/types/NimHttpStatusClassCounts"
+          },
+          "latencyBucketCounts": {
+            "$ref": "#/definitions/types/NimLatencyBucketCounts"
+          },
+          "ttftBucketCounts": {
+            "$ref": "#/definitions/types/NimLatencyBucketCounts"
+          },
+          "missingTtftCount": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "clientDropCount": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "transportRetryCount": {
+            "$ref": "#/definitions/types/NimAggregateCount"
+          },
+          "priorTerminalSendFailureCount": {
+            "$ref": "#/definitions/types/NimAggregateCount"
           },
           "batchId": {
             "$ref": "#/definitions/types/NimBatchId"
@@ -219,25 +395,40 @@
         ],
         "additionalProperties": false,
         "required": [
-          "eventSchemaVersion",
-          "windowStart",
-          "connector",
-          "connectorVersion",
-          "framework",
-          "frameworkVersion",
-          "operation",
-          "modelFamily",
-          "nimId",
-          "successCount",
-          "failureCount",
-          "requestCount",
-          "attemptCount",
-          "inputTokenSum",
-          "outputTokenSum",
-          "missingTokenCount",
-          "errorCategory",
-          "batchId"
-        ]
+            "eventSchemaVersion",
+            "windowStart",
+            "telemetryClientVersion",
+            "connector",
+            "connectorVersion",
+            "framework",
+            "frameworkVersion",
+            "operation",
+            "executionMode",
+            "modelFamily",
+            "nimId",
+            "successCount",
+            "failureCount",
+            "cancelledCount",
+            "partialCount",
+            "requestCount",
+            "attemptCount",
+            "retriedRequestCount",
+            "firstAttemptSuccessCount",
+            "inputTokenSum",
+            "outputTokenSum",
+            "missingTokenCount",
+            "missingTokenAttemptCount",
+            "errorCategory",
+            "errorCategoryCounts",
+            "httpStatusClassCounts",
+            "latencyBucketCounts",
+            "ttftBucketCounts",
+            "missingTtftCount",
+            "clientDropCount",
+            "transportRetryCount",
+            "priorTerminalSendFailureCount",
+            "batchId"
+          ]
       }
     }
   },

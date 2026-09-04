@@ -69,10 +69,12 @@ for supported clients in the current process. An explicit constructor value
 overrides the environment setting.
 
 If explicitly enabled, the connector sends hourly aggregated, content-free usage
-metrics to NVIDIA. The aggregate includes connector and LangChain version
-buckets, a coarse operation and outcome category, an allowlisted public NIM ID
-or `unknown`, request and attempt counts, and aggregate token counts when the
-provider returns them.
+metrics to NVIDIA on a best-effort basis. These totals are not billing-grade.
+The aggregate includes connector and LangChain version buckets, coarse operation,
+execution mode, outcome and HTTP status-class counts, request/attempt/success/
+failure/cancellation/partial/retry/drop counts, latency and time-to-first-token
+histogram buckets, an allowlisted public NIM ID or `unknown`, and aggregate token
+counts when the provider returns them.
 
 It does not send prompts, responses, embeddings, tool inputs or outputs, endpoint
 URLs, hostnames, IP addresses, credentials, exception text, or persistent user,

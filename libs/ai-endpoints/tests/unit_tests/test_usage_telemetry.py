@@ -17,10 +17,12 @@ from langchain_nvidia_ai_endpoints._common import (
 from langchain_nvidia_ai_endpoints._telemetry import (
     _post_envelope,
     _TokenUsage,
+    _TransportDelivery,
     _UsageTelemetry,
     canonical_model_identity,
     classify_error,
     flush_usage_telemetry,
+    http_status_class,
     merge_token_usage,
     operation_for_client,
     record_usage,
@@ -142,6 +144,14 @@ def test_error_classification_uses_status_and_exception_type() -> None:
     assert classify_error(None, ValueError("private prompt")) == "client_validation"
 
 
+def test_http_status_class_uses_closed_buckets() -> None:
+    assert http_status_class(SimpleNamespace(status_code=200)) == "2xx"
+    assert http_status_class(SimpleNamespace(status_code=429)) == "4xx"
+    assert http_status_class(SimpleNamespace(status_code=503)) == "5xx"
+    assert http_status_class(SimpleNamespace(status_code=302)) == "unknown"
+    assert http_status_class(None) == "none"
+
+
 def test_aggregate_flush_matches_schema_and_has_no_identity_values() -> None:
     captured: list[dict] = []
     fixed_now = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
@@ -156,12 +166,16 @@ def test_aggregate_flush_matches_schema_and_has_no_identity_values() -> None:
         model_name="nvidia/nemotron-3.5-lightning-30b-a3b",
         success=True,
         usage=_TokenUsage(100, 50, True),
+        http_status="2xx",
+        latency_seconds=0.2,
     )
     state.record(
         client_name="ChatNVIDIA",
         model_name="nvidia/nemotron-3.5-lightning-30b-a3b",
         success=True,
         usage=_TokenUsage(20, 10, True),
+        http_status="2xx",
+        latency_seconds=0.4,
     )
     state.record(
         client_name="ChatNVIDIA",
@@ -169,13 +183,15 @@ def test_aggregate_flush_matches_schema_and_has_no_identity_values() -> None:
         success=False,
         usage=_TokenUsage(),
         error_category="authorization",
+        http_status="4xx",
+        latency_seconds=1.2,
     )
 
     assert state.flush(include_current=True) == 2
     assert len(captured) == 1
     envelope = captured[0]
     assert envelope["clientId"] == "623344073512268"
-    assert envelope["eventSchemaVer"] == "0.1"
+    assert envelope["eventSchemaVer"] == "0.2"
     for field in ("userId", "externalUserId", "idpId", "sessionId", "deviceId"):
         assert envelope[field] == "undefined"
 
@@ -187,11 +203,26 @@ def test_aggregate_flush_matches_schema_and_has_no_identity_values() -> None:
         for event in events
         if event["parameters"]["errorCategory"] == "none"
     )
+    assert success["telemetryClientVersion"] == "1.0"
+    assert success["executionMode"] == "sync"
     assert success["requestCount"] == 2
     assert success["successCount"] == 2
     assert success["failureCount"] == 0
+    assert success["cancelledCount"] == 0
+    assert success["partialCount"] == 0
+    assert success["firstAttemptSuccessCount"] == 2
+    assert success["retriedRequestCount"] == 0
     assert success["inputTokenSum"] == 120
     assert success["outputTokenSum"] == 60
+    assert success["missingTokenAttemptCount"] == 0
+    assert success["errorCategoryCounts"]["authorization"] == 0
+    assert success["httpStatusClassCounts"]["2xx"] == 2
+    assert sum(success["latencyBucketCounts"].values()) == 2
+    assert sum(success["ttftBucketCounts"].values()) == 0
+    assert success["missingTtftCount"] == 0
+    assert success["clientDropCount"] == 0
+    assert success["transportRetryCount"] == 0
+    assert success["priorTerminalSendFailureCount"] == 0
     failure = next(
         event["parameters"]
         for event in events
@@ -202,6 +233,10 @@ def test_aggregate_flush_matches_schema_and_has_no_identity_values() -> None:
     assert failure["successCount"] == 0
     assert failure["failureCount"] == 1
     assert failure["missingTokenCount"] == 1
+    assert failure["missingTokenAttemptCount"] == 1
+    assert failure["errorCategoryCounts"]["authorization"] == 1
+    assert failure["httpStatusClassCounts"]["4xx"] == 1
+    assert sum(failure["latencyBucketCounts"].values()) == 1
 
     schema = json.loads(
         (
@@ -244,9 +279,18 @@ def test_aggregate_bucket_count_is_bounded() -> None:
         success=True,
         usage=_TokenUsage(found=False),
     )
+    state.record(
+        client_name="ChatNVIDIA",
+        model_name="nvidia/nemotron-3.5-lightning-30b-a3b",
+        success=True,
+        usage=_TokenUsage(found=False),
+    )
 
     assert state.flush(include_current=True) == 1
     assert len(captured[0]["events"]) == 1
+    parameters = captured[0]["events"][0]["parameters"]
+    assert parameters["requestCount"] == 2
+    assert parameters["clientDropCount"] == 1
 
 
 def test_disabled_and_self_hosted_records_do_not_create_global_state(
@@ -306,6 +350,9 @@ def test_sync_request_records_success_and_failure_without_content() -> None:
     kwargs = record.call_args.kwargs
     assert kwargs["success"] is True
     assert kwargs["usage"] == _TokenUsage(9, 4, True)
+    assert kwargs["execution_mode"] == "sync"
+    assert kwargs["http_status"] == "2xx"
+    assert kwargs["latency_seconds"] >= 0
     assert "private" not in repr(kwargs)
 
     failure_response = _response(status=429)
@@ -319,6 +366,9 @@ def test_sync_request_records_success_and_failure_without_content() -> None:
     kwargs = record.call_args.kwargs
     assert kwargs["success"] is False
     assert kwargs["error_category"] == "rate_limited"
+    assert kwargs["execution_mode"] == "sync"
+    assert kwargs["http_status"] == "4xx"
+    assert kwargs["latency_seconds"] >= 0
     assert "private" not in repr(kwargs)
 
 
@@ -370,6 +420,9 @@ def test_sync_stream_records_usage_and_cancellation() -> None:
         assert list(client.get_req_stream({"messages": []}))
     assert record.call_args.kwargs["success"] is True
     assert record.call_args.kwargs["usage"] == _TokenUsage(5, 3, True)
+    assert record.call_args.kwargs["execution_mode"] == "streaming"
+    assert record.call_args.kwargs["http_status"] == "2xx"
+    assert record.call_args.kwargs["ttft_seconds"] is not None
 
     response = SimpleNamespace(
         status_code=200,
@@ -389,6 +442,9 @@ def test_sync_stream_records_usage_and_cancellation() -> None:
         stream.close()
     assert record.call_args.kwargs["success"] is False
     assert record.call_args.kwargs["error_category"] == "cancelled"
+    assert record.call_args.kwargs["execution_mode"] == "streaming"
+    assert record.call_args.kwargs["partial"] is True
+    assert record.call_args.kwargs["ttft_seconds"] is not None
 
 
 @pytest.mark.asyncio
@@ -413,6 +469,7 @@ async def test_async_request_records_success() -> None:
         await client.aget_req({"messages": []})
     assert record.call_args.kwargs["success"] is True
     assert record.call_args.kwargs["usage"] == _TokenUsage(6, 2, True)
+    assert record.call_args.kwargs["execution_mode"] == "async"
     session.close.assert_awaited_once()
 
 
@@ -446,6 +503,9 @@ async def test_async_stream_records_usage_and_cancellation() -> None:
         assert [item async for item in client.aget_req_stream({"messages": []})]
     assert record.call_args.kwargs["success"] is True
     assert record.call_args.kwargs["usage"] == _TokenUsage(8, 3, True)
+    assert record.call_args.kwargs["execution_mode"] == "streaming"
+    assert record.call_args.kwargs["http_status"] == "2xx"
+    assert record.call_args.kwargs["ttft_seconds"] is not None
 
     response = SimpleNamespace(
         status=200,
@@ -464,17 +524,63 @@ async def test_async_stream_records_usage_and_cancellation() -> None:
         await stream.aclose()
     assert record.call_args.kwargs["success"] is False
     assert record.call_args.kwargs["error_category"] == "cancelled"
+    assert record.call_args.kwargs["execution_mode"] == "streaming"
+    assert record.call_args.kwargs["partial"] is True
+    assert record.call_args.kwargs["ttft_seconds"] is not None
 
 
 def test_transport_failures_never_escape() -> None:
-    with patch(
-        "langchain_nvidia_ai_endpoints._telemetry.requests.post",
-        side_effect=requests.ConnectionError("private network detail"),
+    with (
+        patch(
+            "langchain_nvidia_ai_endpoints._telemetry.requests.post",
+            side_effect=requests.ConnectionError("private network detail"),
+        ),
+        patch("langchain_nvidia_ai_endpoints._telemetry.time.sleep"),
     ):
-        _post_envelope(
+        delivery = _post_envelope(
             "https://events.example.test/v1.1/events/json",
             {"events": []},
         )
+    assert delivery == _TransportDelivery(retry_count=2, terminal_failure=True)
+
+
+def test_transport_delivery_health_is_reported_on_next_batch() -> None:
+    captured: list[dict] = []
+
+    def post(endpoint: str, payload: dict) -> _TransportDelivery:
+        captured.append(payload)
+        if len(captured) == 1:
+            return _TransportDelivery(retry_count=2, terminal_failure=True)
+        return _TransportDelivery()
+
+    state = _UsageTelemetry(
+        endpoint="https://events.example.test/v1.1/events/json",
+        post=post,
+        now=lambda: datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+        start_worker=False,
+    )
+    state.record(
+        client_name="ChatNVIDIA",
+        model_name="nvidia/nemotron-3.5-lightning-30b-a3b",
+        success=True,
+        usage=_TokenUsage(1, 1, True),
+    )
+    assert state.flush(include_current=True) == 1
+
+    state.record(
+        client_name="ChatNVIDIA",
+        model_name="nvidia/nemotron-3.5-lightning-30b-a3b",
+        success=True,
+        usage=_TokenUsage(1, 1, True),
+    )
+    assert state.flush(include_current=True) == 1
+
+    first = captured[0]["events"][0]["parameters"]
+    second = captured[1]["events"][0]["parameters"]
+    assert first["transportRetryCount"] == 0
+    assert first["priorTerminalSendFailureCount"] == 0
+    assert second["transportRetryCount"] == 2
+    assert second["priorTerminalSendFailureCount"] == 1
 
 
 @pytest.mark.parametrize(

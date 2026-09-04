@@ -38,6 +38,7 @@ from langchain_nvidia_ai_endpoints._statics import MODEL_TABLE, Model, determine
 from langchain_nvidia_ai_endpoints._telemetry import (
     _TokenUsage,
     classify_error,
+    http_status_class,
     merge_token_usage,
     record_usage,
     token_usage,
@@ -102,11 +103,11 @@ class _NVIDIABaseClient(BaseModel):
     )
 
     api_key: Optional[SecretStr] = Field(
-        default_factory=lambda: SecretStr(
-            os.getenv(_API_KEY_VAR, "INTERNAL_LCNVAIE_ERROR")
-        )
-        if _API_KEY_VAR in os.environ
-        else None,
+        default_factory=lambda: (
+            SecretStr(os.getenv(_API_KEY_VAR, "INTERNAL_LCNVAIE_ERROR"))
+            if _API_KEY_VAR in os.environ
+            else None
+        ),
         description="API Key for service of choice",
     )
 
@@ -350,7 +351,14 @@ class _NVIDIABaseClient(BaseModel):
             }
         return payload
 
-    def _record_usage_success(self, value: Any) -> None:
+    def _record_usage_success(
+        self,
+        value: Any,
+        *,
+        execution_mode: str,
+        latency_seconds: float,
+        ttft_seconds: Optional[float] = None,
+    ) -> None:
         try:
             usage = value if isinstance(value, _TokenUsage) else token_usage(value)
             record_usage(
@@ -360,11 +368,23 @@ class _NVIDIABaseClient(BaseModel):
                 model_name=self.mdl_name,
                 success=True,
                 usage=usage,
+                execution_mode=execution_mode,
+                http_status=http_status_class(self.last_response),
+                latency_seconds=latency_seconds,
+                ttft_seconds=ttft_seconds,
             )
         except Exception:
             pass
 
-    def _record_usage_failure(self, error: BaseException) -> None:
+    def _record_usage_failure(
+        self,
+        error: BaseException,
+        *,
+        execution_mode: str,
+        latency_seconds: float,
+        ttft_seconds: Optional[float] = None,
+        partial: bool = False,
+    ) -> None:
         try:
             record_usage(
                 enabled=self.usage_telemetry_enabled,
@@ -374,6 +394,11 @@ class _NVIDIABaseClient(BaseModel):
                 success=False,
                 usage=_TokenUsage(),
                 error_category=classify_error(self.last_response, error),
+                execution_mode=execution_mode,
+                http_status=http_status_class(self.last_response),
+                latency_seconds=latency_seconds,
+                ttft_seconds=ttft_seconds,
+                partial=partial,
             )
         except Exception:
             pass
@@ -505,9 +530,9 @@ class _NVIDIABaseClient(BaseModel):
                     f"Timeout reached without a successful response."
                     f"\nLast response: {str(response)}"
                 )
-            assert (
-                "NVCF-REQID" in response.headers
-            ), "Received 202 response with no request id to follow"
+            assert "NVCF-REQID" in response.headers, (
+                "Received 202 response with no request id to follow"
+            )
             request_id = response.headers.get("NVCF-REQID")
             payload = {
                 "url": self.polling_url_tmpl.format(request_id=request_id),
@@ -657,15 +682,26 @@ class _NVIDIASyncClient(_NVIDIABaseClient):
         extra_headers: dict = {},
     ) -> Response:
         """Post to the API."""
+        start_time = time.monotonic()
         try:
             response, session = self._post(
                 self.infer_url, payload, extra_headers=extra_headers
             )
+            self.last_response = response
             response = self._wait(response, session)
-            self._record_usage_success(response)
+            self.last_response = response
+            self._record_usage_success(
+                response,
+                execution_mode="sync",
+                latency_seconds=time.monotonic() - start_time,
+            )
             return response
         except BaseException as error:
-            self._record_usage_failure(error)
+            self._record_usage_failure(
+                error,
+                execution_mode="sync",
+                latency_seconds=time.monotonic() - start_time,
+            )
             raise
 
     ###################################################################################
@@ -676,6 +712,7 @@ class _NVIDIASyncClient(_NVIDIABaseClient):
         payload: dict,
         extra_headers: dict = {},
     ) -> Iterator[Dict]:
+        start_time = time.monotonic()
         self.last_inputs = {
             "url": self.infer_url,
             "headers": {
@@ -693,16 +730,23 @@ class _NVIDIASyncClient(_NVIDIABaseClient):
             )
             self._try_raise(response)
         except BaseException as error:
-            self._record_usage_failure(error)
+            self._record_usage_failure(
+                error,
+                execution_mode="streaming",
+                latency_seconds=time.monotonic() - start_time,
+            )
             raise
         call: _NVIDIASyncClient = self.model_copy()
 
         def out_gen() -> Generator[dict, Any, Any]:
             usage = _TokenUsage()
             completed = False
+            ttft_seconds: Optional[float] = None
             try:
                 for line in response.iter_lines():
                     if line and line.strip() != b"data: [DONE]":
+                        if ttft_seconds is None:
+                            ttft_seconds = time.monotonic() - start_time
                         line = line.decode("utf-8")
                         msg, final_line = call.postprocess(line)
                         usage = merge_token_usage(usage, token_usage(msg))
@@ -710,11 +754,22 @@ class _NVIDIASyncClient(_NVIDIABaseClient):
                     self._try_raise(response)
                 completed = True
             except BaseException as error:
-                self._record_usage_failure(error)
+                self._record_usage_failure(
+                    error,
+                    execution_mode="streaming",
+                    latency_seconds=time.monotonic() - start_time,
+                    ttft_seconds=ttft_seconds,
+                    partial=ttft_seconds is not None,
+                )
                 raise
             finally:
                 if completed:
-                    self._record_usage_success(usage)
+                    self._record_usage_success(
+                        usage,
+                        execution_mode="streaming",
+                        latency_seconds=time.monotonic() - start_time,
+                        ttft_seconds=ttft_seconds,
+                    )
 
         return (r for r in out_gen())
 
@@ -818,9 +873,9 @@ class _NVIDIAAsyncClient(_NVIDIABaseClient):
                     f"Timeout reached without a successful response."
                     f"\nLast response: {str(response)}"
                 )
-            assert (
-                "NVCF-REQID" in response.headers
-            ), "Received 202 response with no request id to follow"
+            assert "NVCF-REQID" in response.headers, (
+                "Received 202 response with no request id to follow"
+            )
             request_id = response.headers.get("NVCF-REQID")
             payload = {
                 "url": self.polling_url_tmpl.format(request_id=request_id),
@@ -884,19 +939,30 @@ class _NVIDIAAsyncClient(_NVIDIABaseClient):
         extra_headers: dict = {},
     ) -> str:
         """Async version of `get_req`."""
+        start_time = time.monotonic()
         try:
             response, session = await self._post_async(
                 self.infer_url, payload, extra_headers=extra_headers
             )
+            self.last_response = response
             try:
                 response = await self._wait_async(response, session)
+                self.last_response = response
                 text = await response.text()
-                self._record_usage_success(text)
+                self._record_usage_success(
+                    text,
+                    execution_mode="async",
+                    latency_seconds=time.monotonic() - start_time,
+                )
                 return text
             finally:
                 await session.close()
         except BaseException as error:
-            self._record_usage_failure(error)
+            self._record_usage_failure(
+                error,
+                execution_mode="async",
+                latency_seconds=time.monotonic() - start_time,
+            )
             raise
 
     async def aget_req_stream(
@@ -905,6 +971,7 @@ class _NVIDIAAsyncClient(_NVIDIABaseClient):
         extra_headers: dict = {},
     ) -> AsyncIterator[Dict]:
         """Async version of `get_req_stream`."""
+        start_time = time.monotonic()
         self.last_inputs = {
             "url": self.infer_url,
             "headers": {
@@ -917,6 +984,7 @@ class _NVIDIAAsyncClient(_NVIDIABaseClient):
         session = self.get_async_session_fn()
         usage = _TokenUsage()
         completed = False
+        ttft_seconds: Optional[float] = None
         try:
             self.last_response = response = await session.post(
                 **self._add_authorization(self.last_inputs)
@@ -931,6 +999,8 @@ class _NVIDIAAsyncClient(_NVIDIABaseClient):
                     break
                 line = line.strip()
                 if line and line != b"data: [DONE]":
+                    if ttft_seconds is None:
+                        ttft_seconds = time.monotonic() - start_time
                     line_str = line.decode("utf-8")
                     msg, final_line = call.postprocess(line_str)
                     usage = merge_token_usage(usage, token_usage(msg))
@@ -938,12 +1008,23 @@ class _NVIDIAAsyncClient(_NVIDIABaseClient):
                 await self._try_raise_async(response)
             completed = True
         except BaseException as error:
-            self._record_usage_failure(error)
+            self._record_usage_failure(
+                error,
+                execution_mode="streaming",
+                latency_seconds=time.monotonic() - start_time,
+                ttft_seconds=ttft_seconds,
+                partial=ttft_seconds is not None,
+            )
             raise
         finally:
             await session.close()
             if completed:
-                self._record_usage_success(usage)
+                self._record_usage_success(
+                    usage,
+                    execution_mode="streaming",
+                    latency_seconds=time.monotonic() - start_time,
+                    ttft_seconds=ttft_seconds,
+                )
 
 
 def _build_clients(
