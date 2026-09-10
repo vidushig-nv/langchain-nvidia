@@ -52,9 +52,11 @@ To get access to the NVIDIA API Catalog, do the following:
 You can now use your key to access endpoints on the NVIDIA API Catalog.
 
 
-### Optional NVIDIA NIM usage telemetry
+### Telemetry & privacy
 
-Usage telemetry is disabled by default. To opt in for a client instance, set
+`langchain-nvidia-ai-endpoints` includes an optional function to share
+content-free, aggregate telemetry with NVIDIA for product improvement. Usage
+telemetry is disabled by default. To opt in for a client instance, set
 `usage_telemetry_enabled=True`:
 
 ```python
@@ -68,19 +70,51 @@ Alternatively, set `NVIDIA_USAGE_TELEMETRY_ENABLED=true` to provide the default
 for supported clients in the current process. An explicit constructor value
 overrides the environment setting.
 
-If explicitly enabled, the connector sends hourly aggregated, content-free usage
-metrics to NVIDIA on a best-effort basis. These totals are not billing-grade.
-The aggregate includes connector and LangChain version buckets, coarse operation,
-execution mode, outcome and HTTP status-class counts, request/attempt/success/
-failure/cancellation/partial/retry/drop counts, latency and time-to-first-token
-histogram buckets, an allowlisted public NIM ID or `unknown`, and aggregate token
-counts when the provider returns them.
+If explicitly enabled, the connector sends hourly aggregate usage and reliability
+metrics to NVIDIA on a best-effort basis. Data collected by the connector is
+limited to operational metrics such as connector and LangChain version,
+operation type, execution mode, outcome and HTTP status-class counts,
+request/attempt/success/failure/cancellation/partial/retry/drop counts, latency
+and time-to-first-token histogram buckets, an approved public NVIDIA NIM ID or
+`unknown`, model family, aggregate token counts, and missing-token counts when
+the provider returns usage information. These totals are not billing-grade.
 
-It does not send prompts, responses, embeddings, tool inputs or outputs, endpoint
-URLs, hostnames, IP addresses, credentials, exception text, or persistent user,
-device, installation, or session identifiers. Aggregates remain in memory only,
-are never written to disk, and apply only to NVIDIA-hosted NIM endpoints.
-Self-hosted endpoints do not emit this telemetry.
+The connector telemetry payload does not collect or send prompts, responses,
+embeddings, tool inputs or outputs, credentials, endpoint URLs, hostnames,
+exception text, account IDs, organization IDs, or persistent user, device,
+installation, or session identifiers. This data is used to understand aggregate
+adoption and reliability of supported NVIDIA NIM integrations. It is not used to
+track individual user behavior, for billing, or for precise capacity accounting.
+
+Aggregates remain in memory only, are never written to disk, and apply only to
+NVIDIA-hosted NIM endpoints. Self-hosted endpoints do not emit this telemetry.
+
+NVIDIA telemetry infrastructure may add standard transport or routing metadata
+during ingestion and indexing. Any platform-added metadata used or retained for
+this project must be reviewed and approved before production launch.
+
+You may disable telemetry at any time. To disable telemetry for the current
+shell, unset `NVIDIA_USAGE_TELEMETRY_ENABLED` or set it to `false` before running
+your application:
+
+```bash
+export NVIDIA_USAGE_TELEMETRY_ENABLED=false
+```
+
+You can also disable telemetry for a single client instance:
+
+```python
+llm = ChatNVIDIA(
+    model="nvidia/nemotron-3-super-120b-a12b",
+    usage_telemetry_enabled=False,
+)
+```
+
+If telemetry is disabled, the connector does not send telemetry requests and
+telemetry has no effect on connector operation. Opting out applies only to
+telemetry collection by the `langchain-nvidia-ai-endpoints` connector itself.
+It does not change the terms of service or privacy practices of any inference
+endpoint you choose to use.
 
 For authorized UAT only, set `NVIDIA_USAGE_TELEMETRY_ENDPOINT` to the approved
 test ingestion URL. Do not redirect telemetry to an unapproved collector.
