@@ -55,36 +55,22 @@ You can now use your key to access endpoints on the NVIDIA API Catalog.
 ### Telemetry & privacy
 
 `langchain-nvidia-ai-endpoints` includes an optional function to share
-content-free, aggregate telemetry with NVIDIA for product improvement. Usage
-telemetry is disabled by default. To opt in for a client instance, set
-`usage_telemetry_enabled=True`:
+content-free, aggregate telemetry with NVIDIA for product improvement. Telemetry
+is enabled by default for supported NVIDIA-hosted NIM endpoint usage and can be
+disabled as described below. Data collected by the connector is limited to
+operational usage and reliability metrics, such as connector and LangChain
+version, operation type, approved
+public NVIDIA NIM ID or `unknown`, model family, request and retry counts,
+success and failure counts, token counts, missing-token counts, latency buckets,
+and coarse error categories. These totals are best-effort and are not
+billing-grade.
 
-```python
-llm = ChatNVIDIA(
-    model="nvidia/nemotron-3-super-120b-a12b",
-    usage_telemetry_enabled=True,
-)
-```
-
-Alternatively, set `NVIDIA_USAGE_TELEMETRY_ENABLED=true` to provide the default
-for supported clients in the current process. An explicit constructor value
-overrides the environment setting.
-
-If explicitly enabled, the connector sends hourly aggregate usage and reliability
-metrics to NVIDIA on a best-effort basis. Data collected by the connector is
-limited to operational metrics such as connector and LangChain version,
-operation type, execution mode, outcome and HTTP status-class counts,
-request/attempt/success/failure/cancellation/partial/retry/drop counts, latency
-and time-to-first-token histogram buckets, an approved public NVIDIA NIM ID or
-`unknown`, model family, aggregate token counts, and missing-token counts when
-the provider returns usage information. These totals are not billing-grade.
-
-The connector telemetry payload does not collect or send prompts, responses,
-embeddings, tool inputs or outputs, credentials, endpoint URLs, hostnames,
-exception text, account IDs, organization IDs, or persistent user, device,
-installation, or session identifiers. This data is used to understand aggregate
-adoption and reliability of supported NVIDIA NIM integrations. It is not used to
-track individual user behavior, for billing, or for precise capacity accounting.
+The connector telemetry payload does not collect prompts, responses, embeddings,
+tool inputs or outputs, credentials, endpoint URLs, hostnames, exception text,
+account IDs, organization IDs, or persistent user, device, installation, or
+session identifiers. This data is used to understand aggregate adoption and
+reliability of supported NVIDIA NIM integrations. It is not used to track
+individual user behavior, for billing, or for precise capacity accounting.
 
 Aggregates remain in memory only, are never written to disk, and apply only to
 NVIDIA-hosted NIM endpoints. Self-hosted endpoints do not emit this telemetry.
@@ -93,9 +79,10 @@ NVIDIA telemetry infrastructure may add standard transport or routing metadata
 during ingestion and indexing. Any platform-added metadata used or retained for
 this project must be reviewed and approved before production launch.
 
-You may disable telemetry at any time. To disable telemetry for the current
-shell, unset `NVIDIA_USAGE_TELEMETRY_ENABLED` or set it to `false` before running
-your application:
+You may opt out of telemetry collection at any time. Opting out applies only to
+telemetry collection by the `langchain-nvidia-ai-endpoints` connector itself.
+To disable telemetry for the current shell, set
+`NVIDIA_USAGE_TELEMETRY_ENABLED=false` before running your application:
 
 ```bash
 export NVIDIA_USAGE_TELEMETRY_ENABLED=false
@@ -111,10 +98,17 @@ llm = ChatNVIDIA(
 ```
 
 If telemetry is disabled, the connector does not send telemetry requests and
-telemetry has no effect on connector operation. Opting out applies only to
-telemetry collection by the `langchain-nvidia-ai-endpoints` connector itself.
-It does not change the terms of service or privacy practices of any inference
-endpoint you choose to use.
+telemetry has no effect on connector operation.
+
+**Use of third-party endpoints, including NVIDIA Build:** `langchain-nvidia-ai-endpoints`
+can be configured to use various inference endpoints, including
+[build.nvidia.com](https://build.nvidia.com/) (NVIDIA Build). If you choose to
+use NVIDIA Build or any other third-party endpoint, that endpoint's own terms of
+service and privacy practices apply independently of this library. Any opt-out
+you exercise within `langchain-nvidia-ai-endpoints` does not extend to data
+collection by your chosen endpoint. NVIDIA Build is intended for evaluation and
+testing purposes only and may not be used in production environments. Do not
+submit confidential information or personal data when using NVIDIA Build.
 
 For authorized UAT only, set `NVIDIA_USAGE_TELEMETRY_ENDPOINT` to the approved
 test ingestion URL. Do not redirect telemetry to an unapproved collector.

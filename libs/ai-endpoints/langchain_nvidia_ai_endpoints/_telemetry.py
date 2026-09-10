@@ -1,4 +1,4 @@
-"""Explicitly enabled, content-free aggregate usage telemetry."""
+"""Content-free aggregate usage telemetry with process and client opt-out."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ _UAT_ENDPOINT = "https://events.telemetry.data-uat.nvidia.com/v1.1/events/json"
 _ALLOWED_ENDPOINTS = frozenset({_DEFAULT_ENDPOINT, _UAT_ENDPOINT})
 _ENABLED_ENV = "NVIDIA_USAGE_TELEMETRY_ENABLED"
 _ENDPOINT_ENV = "NVIDIA_USAGE_TELEMETRY_ENDPOINT"
+_DISABLED_VALUES = {"0", "false", "no", "off"}
 _MAX_COUNT = 2**31 - 1
 _MAX_TOKEN_SUM = 2**63 - 1
 _MAX_BUCKETS = 256
@@ -176,16 +177,11 @@ class _TransportDelivery:
 
 
 def usage_telemetry_enabled(value: Optional[bool] = None) -> bool:
-    """Return an explicit constructor setting or the default-off environment setting."""
+    """Return an explicit constructor setting or the default-on environment setting."""
 
     if value is not None:
         return value
-    return os.getenv(_ENABLED_ENV, "").strip().casefold() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return os.getenv(_ENABLED_ENV, "").strip().casefold() not in _DISABLED_VALUES
 
 
 def operation_for_client(client_name: str) -> str:

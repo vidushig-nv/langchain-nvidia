@@ -77,7 +77,8 @@ class NVIDIARerank(BaseDocumentCompressor):
         exclude=True,
         repr=False,
         description=(
-            "Enable content-free aggregate usage telemetry. Disabled by default."
+            "Enable content-free aggregate usage telemetry. Enabled by default "
+            "unless disabled."
         ),
     )
 
@@ -106,7 +107,7 @@ class NVIDIARerank(BaseDocumentCompressor):
             nvidia_api_key: The API key to use for connecting to the hosted NIM.
             api_key: Alternative to `nvidia_api_key`.
             usage_telemetry_enabled: Enable content-free hourly usage aggregates for
-                NVIDIA-hosted NIMs. Disabled by default.
+                NVIDIA-hosted NIMs. Enabled by default unless disabled.
             **kwargs: Additional parameters passed to the underlying client.
 
         The recommended way to provide the API key is through the `NVIDIA_API_KEY`
@@ -338,9 +339,9 @@ class NVIDIARerank(BaseDocumentCompressor):
             results: List to append processed documents to
         """
         for ranking in rankings:
-            assert (
-                0 <= ranking.index < len(doc_batch)
-            ), "invalid response from server: index out of range"
+            assert 0 <= ranking.index < len(doc_batch), (
+                "invalid response from server: index out of range"
+            )
             doc = doc_batch[ranking.index]
             doc.metadata["relevance_score"] = ranking.logit
             results.append(doc)

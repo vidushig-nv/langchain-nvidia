@@ -48,7 +48,8 @@ class NVIDIA(LLM):
         exclude=True,
         repr=False,
         description=(
-            "Enable content-free aggregate usage telemetry. Disabled by default."
+            "Enable content-free aggregate usage telemetry. Enabled by default "
+            "unless disabled."
         ),
     )
 
@@ -110,7 +111,7 @@ class NVIDIA(LLM):
             nvidia_api_key: The API key to use for connecting to the hosted NIM.
             api_key: Alternative to `nvidia_api_key`.
             usage_telemetry_enabled: Enable content-free hourly usage aggregates for
-                NVIDIA-hosted NIMs. Disabled by default.
+                NVIDIA-hosted NIMs. Enabled by default unless disabled.
             **kwargs: Additional parameters passed to the underlying client.
 
         The recommended way to provide the API key is through the `NVIDIA_API_KEY`

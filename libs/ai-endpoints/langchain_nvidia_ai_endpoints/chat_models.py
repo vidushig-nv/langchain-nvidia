@@ -387,7 +387,8 @@ class ChatNVIDIA(BaseChatModel):
         exclude=True,
         repr=False,
         description=(
-            "Enable content-free aggregate usage telemetry. Disabled by default."
+            "Enable content-free aggregate usage telemetry. Enabled by default "
+            "unless disabled."
         ),
     )
 
@@ -451,7 +452,7 @@ class ChatNVIDIA(BaseChatModel):
             stop: A string or list of strings specifying stop sequences.
             default_headers: Default headers merged into all requests.
             usage_telemetry_enabled: Enable content-free hourly usage aggregates for
-                NVIDIA-hosted NIMs. Disabled by default. The
+                NVIDIA-hosted NIMs. Enabled by default unless disabled. The
                 `NVIDIA_USAGE_TELEMETRY_ENABLED` environment variable provides the
                 default when this argument is omitted.
             **kwargs: Additional parameters passed to the underlying client.
@@ -893,9 +894,9 @@ class ChatNVIDIA(BaseChatModel):
             }
         # "tool_calls" is set for invoke and stream responses
         if tool_calls := kw_left.pop("tool_calls", None):
-            assert isinstance(
-                tool_calls, list
-            ), "invalid response from server: tool_calls must be a list"
+            assert isinstance(tool_calls, list), (
+                "invalid response from server: tool_calls must be a list"
+            )
             # todo: break this into post-processing for invoke and stream
             if not streaming:
                 out_dict["additional_kwargs"]["tool_calls"] = tool_calls

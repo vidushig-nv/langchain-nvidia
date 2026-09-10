@@ -79,14 +79,26 @@ def _response(status: int = 200, payload: dict | None = None) -> requests.Respon
     return response
 
 
-def test_usage_telemetry_is_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_usage_telemetry_is_default_on_with_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("NVIDIA_USAGE_TELEMETRY_ENABLED", raising=False)
-    assert usage_telemetry_enabled() is False
+    assert usage_telemetry_enabled() is True
     assert usage_telemetry_enabled(False) is False
     assert usage_telemetry_enabled(True) is True
 
     monkeypatch.setenv("NVIDIA_USAGE_TELEMETRY_ENABLED", "true")
     assert usage_telemetry_enabled() is True
+    monkeypatch.setenv("NVIDIA_USAGE_TELEMETRY_ENABLED", "1")
+    assert usage_telemetry_enabled() is True
+
+
+@pytest.mark.parametrize("disabled_value", ["0", "false", "False", "no", "off"])
+def test_usage_telemetry_env_opt_out(
+    monkeypatch: pytest.MonkeyPatch, disabled_value: str
+) -> None:
+    monkeypatch.setenv("NVIDIA_USAGE_TELEMETRY_ENABLED", disabled_value)
+    assert usage_telemetry_enabled() is False
 
 
 def test_canonical_model_identity_uses_versioned_static_allowlist() -> None:
@@ -616,6 +628,34 @@ def test_transport_delivery_health_is_reported_on_next_batch() -> None:
         ),
     ],
 )
-def test_public_clients_propagate_explicit_opt_in(client: Any, expected: bool) -> None:
+def test_public_clients_propagate_explicit_setting(client: Any, expected: bool) -> None:
     assert client._client.usage_telemetry_enabled is expected
     assert client._async_client.usage_telemetry_enabled is expected
+
+
+def test_public_client_uses_default_on_and_env_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NVIDIA_USAGE_TELEMETRY_ENABLED", raising=False)
+    default_client = ChatNVIDIA(
+        model="nvidia/nemotron-3.5-lightning-30b-a3b",
+        api_key="test",
+    )
+    assert default_client._client.usage_telemetry_enabled is True
+    assert default_client._async_client.usage_telemetry_enabled is True
+
+    monkeypatch.setenv("NVIDIA_USAGE_TELEMETRY_ENABLED", "false")
+    disabled_client = ChatNVIDIA(
+        model="nvidia/nemotron-3.5-lightning-30b-a3b",
+        api_key="test",
+    )
+    assert disabled_client._client.usage_telemetry_enabled is False
+    assert disabled_client._async_client.usage_telemetry_enabled is False
+
+    explicit_client = ChatNVIDIA(
+        model="nvidia/nemotron-3.5-lightning-30b-a3b",
+        api_key="test",
+        usage_telemetry_enabled=True,
+    )
+    assert explicit_client._client.usage_telemetry_enabled is True
+    assert explicit_client._async_client.usage_telemetry_enabled is True

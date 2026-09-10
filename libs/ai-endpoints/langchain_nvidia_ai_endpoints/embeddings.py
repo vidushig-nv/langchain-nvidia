@@ -77,7 +77,8 @@ class NVIDIAEmbeddings(BaseModel, Embeddings):
         exclude=True,
         repr=False,
         description=(
-            "Enable content-free aggregate usage telemetry. Disabled by default."
+            "Enable content-free aggregate usage telemetry. Enabled by default "
+            "unless disabled."
         ),
     )
 
@@ -113,7 +114,7 @@ class NVIDIAEmbeddings(BaseModel, Embeddings):
             dimensions: The number of dimensions for the embeddings. This
                 parameter is not supported by all models.
             usage_telemetry_enabled: Enable content-free hourly usage aggregates for
-                NVIDIA-hosted NIMs. Disabled by default.
+                NVIDIA-hosted NIMs. Enabled by default unless disabled.
             **kwargs: Additional parameters passed to the underlying client.
 
         The recommended way to provide the API key is through the `NVIDIA_API_KEY`
